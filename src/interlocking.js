@@ -338,6 +338,7 @@ function submitSectionEvent(instanceId, seq, sectionId, action, clientName) {
   }
 
   const db = getDb();
+  let abortedCancelId = null;
   const txn = db.transaction(() => {
     const inst = getInstance(instanceId);
     const steps = getRouteSteps(inst.route_id);
@@ -387,6 +388,12 @@ function submitSectionEvent(instanceId, seq, sectionId, action, clientName) {
       db.prepare(
         `INSERT INTO section_events(instance_id,seq,section_id,action,client) VALUES(?,?,?,?,?)`
       ).run(instanceId, seq, sectionId, action, clientName);
+
+      // 保护期内收到该实例的首段占用事件：占用照常按现有走行规则受理，
+      // 并在同一事务内终止其延时取消申请（幂等重传走 existing 分支不会到达这里）
+      abortedCancelId = require('./cancel').abortPendingInTxn(instanceId,
+        `保护期内收到首段走行占用事件（序号 ${seq}，区段 ${sectionId}），` +
+        '按走行规则受理，延时取消申请终止，锁闭保留');
 
       const updates = ['next_seq = next_seq + 1', 'head_step = head_step + 1'];
       // 列车进入首段 → 入口信号回红
@@ -438,7 +445,10 @@ function submitSectionEvent(instanceId, seq, sectionId, action, clientName) {
   });
 
   const result = txn();
+  // 首段占用在事务内终止了等待中的延时取消：同步撤掉其到期定时器
+  if (abortedCancelId != null) require('./cancel').clearTimer(instanceId);
   result.detail = getInstanceDetail(instanceId, true);
+  if (abortedCancelId != null) result.cancellationAbortedId = abortedCancelId;
   // 走行事件可能逐段解锁或整条进路解除 → 自动尝试兑现等待申请
   triggerWaitingSweep('section_event');
   return result;
@@ -538,8 +548,10 @@ function getState() {
     routes,
     openInstances,
     recentReleased,
-    // 懒加载避免与 waiting.js 的循环依赖
-    waitingApplications: require('./waiting').listApplications()
+    // 懒加载避免与 waiting.js / cancel.js 的循环依赖
+    waitingApplications: require('./waiting').listApplications(),
+    cancellationRequests: require('./cancel').listRequests(),
+    cancelProtectSeconds: require('./cancel').getProtectSeconds()
   };
 }
 

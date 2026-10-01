@@ -5,6 +5,7 @@ const { getDb } = require('../db');
 const { requireAuth } = require('../auth');
 const { getState, triggerWaitingSweep } = require('../interlocking');
 const waiting = require('../waiting');
+const cancel = require('../cancel');
 
 const router = express.Router();
 router.use(requireAuth('admin'));
@@ -328,6 +329,19 @@ router.delete('/routes/:id', wrap((req, res) => {
 /* ------------------------------ 推演状态重置 ------------------------------ */
 
 /**
+ * 延时取消保护时长（正整数秒）。修改只影响之后的新申请，不追改已有申请。
+ * GET 读取当前设置；PUT {seconds} 修改。
+ */
+router.get('/settings/cancel-protect-seconds', (req, res) => {
+  res.json({ ok: true, protectSeconds: cancel.getProtectSeconds() });
+});
+
+router.put('/settings/cancel-protect-seconds', wrap((req, res) => {
+  const result = cancel.setProtectSeconds(req.body && req.body.seconds);
+  res.json({ ok: true, ...result });
+}));
+
+/**
  * 清空推演状态：删除全部进路实例/事件/锁，区段恢复未知（按占用），道岔回定位 N。
  * 拓扑（区段/道岔/信号机/进路定义）保留。
  */
@@ -339,6 +353,8 @@ router.post('/reset/state', wrap((req, res) => {
     db.prepare(`UPDATE switches SET position='N'`).run();
     // 管理员重置推演：撤销全部等待申请
     waiting.cancelAllByReset('管理员清空推演状态，全部等待申请撤销');
+    // 一并清除全部延时取消申请（实例已删，定时器同步清理）
+    cancel.clearAllByReset();
   })();
   res.json({ ok: true, state: getState() });
 }));
@@ -355,6 +371,8 @@ router.post('/reset/training', wrap((req, res) => {
     db.prepare(`UPDATE switches SET position='N'`).run();
     // 管理员重置推演：撤销全部等待申请
     waiting.cancelAllByReset('管理员恢复示例初始状态（培训重开），全部等待申请撤销');
+    // 一并清除全部延时取消申请（实例已删，定时器同步清理）
+    cancel.clearAllByReset();
   })();
   res.json({ ok: true, state: getState() });
 }));

@@ -4,6 +4,7 @@ const express = require('express');
 const { requireAuth } = require('../auth');
 const inter = require('../interlocking');
 const waiting = require('../waiting');
+const cancel = require('../cancel');
 const { InterlockError } = require('../interlocking');
 
 const router = express.Router();
@@ -100,6 +101,28 @@ router.get('/waiting', wrap((req, res) => {
 router.post('/waiting/:id/cancel', wrap((req, res) => {
   const app = waiting.cancelApplication(Number(req.params.id), req.session.name);
   res.json({ ok: true, waiting: app });
+}));
+
+/* --------------------------- 进路延时取消（保护期） --------------------------- */
+
+// 对已开放且尚无走行占用记录的进路申请延时取消。
+// 立即令入口信号回红、锁闭保留；重复申请返回原申请（不缩短期限/不产生第二笔）。
+router.post('/instances/:id/cancel-request', wrap((req, res) => {
+  const result = cancel.requestCancellation(Number(req.params.id), req.session.name);
+  res.json({ ok: true, ...result });
+}));
+
+// 查看延时取消申请：默认本人全部；?scope=all 返回全员（值班台仲裁展示）；
+// 可选 ?status=pending|released|aborted|cancelled
+router.get('/cancel-requests', wrap((req, res) => {
+  const scope = String(req.query.scope || 'mine');
+  const status = ['pending', 'released', 'aborted', 'cancelled'].includes(req.query.status)
+    ? req.query.status : null;
+  const list = cancel.listRequests({
+    applicant: scope === 'all' ? undefined : req.session.name,
+    status
+  });
+  res.json({ ok: true, cancellations: list, me: req.session.name });
 }));
 
 module.exports = router;

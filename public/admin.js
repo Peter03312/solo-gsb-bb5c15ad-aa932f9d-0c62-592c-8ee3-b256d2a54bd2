@@ -531,13 +531,35 @@ function renderSide() {
   // 推演管理
   side.appendChild(html('div', { class: 'section-title' }, '推演管理'));
   const mgmt = html('div', {});
+
+  // 延时取消保护时长（正整数秒；修改不追改已有申请）
+  const settingRow = html('div', { class: 'row', style: 'flex-wrap:wrap;gap:6px;' });
+  const secIn = html('input', {
+    type: 'number', min: '1', step: '1',
+    value: String(STATE.cancelProtectSeconds || 120), style: 'width:90px;'
+  });
+  const saveSec = html('button', { class: 'ghost small' }, '保存保护时长');
+  saveSec.addEventListener('click', async () => {
+    try {
+      await api('/api/admin/settings/cancel-protect-seconds', {
+        method: 'PUT', body: JSON.stringify({ seconds: Number(secIn.value) })
+      });
+      toast('延时取消保护时长已保存（仅影响之后的新申请）', 'ok', 4500);
+    } catch (e) { toast(e.message, 'err', 5000); }
+  });
+  settingRow.appendChild(html('span', { class: 'hint' }, '延时取消保护时长（秒，正整数）：'));
+  settingRow.appendChild(secIn);
+  settingRow.appendChild(saveSec);
+  settingRow.appendChild(html('span', { class: 'hint' }, '修改不追改已提交的取消申请'));
+  mgmt.appendChild(settingRow);
+
   const b1 = html('button', { class: 'ghost' }, '清空推演状态（区段→未知，道岔→N）');
   const b2 = html('button', { class: 'ghost' }, '培训重开（区段→空闲，道岔→N）');
   b1.addEventListener('click', resetState('/api/admin/reset/state',
-    '将删除全部进路实例与事件，区段恢复"未知"，确定？'));
+    '将删除全部进路实例与事件，区段恢复"未知"，并清除全部等待/延时取消申请，确定？'));
   b2.addEventListener('click', resetState('/api/admin/reset/training',
-    '将删除全部进路实例与事件，区段全部置为空闲，确定重新开始一轮演练？'));
-  mgmt.appendChild(html('div', { class: 'row' }, b1));
+    '将删除全部进路实例与事件，区段全部置为空闲，并清除全部等待/延时取消申请，确定重新开始一轮演练？'));
+  mgmt.appendChild(html('div', { class: 'row', style: 'margin-top:8px;' }, b1));
   mgmt.appendChild(html('div', { class: 'row', style: 'margin-top:8px;' }, b2));
   side.appendChild(mgmt);
 }

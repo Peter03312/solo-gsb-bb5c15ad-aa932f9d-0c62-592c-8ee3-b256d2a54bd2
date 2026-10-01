@@ -148,6 +148,34 @@ CREATE TABLE IF NOT EXISTS waiting_applications (
   ended_at    TEXT
 );
 
+-- 进路延时取消申请（值班员对"已开放且尚无走行占用记录"的进路申请延时取消）
+-- 与 waiting_applications 一样不设外键级联：实例可能被管理员重置直接删除，
+-- 申请记录重置时一并清除；其余生命周期完全由 cancel.js 在事务内维护。
+-- 申请立即令入口信号回红，原区段/道岔锁（route_locks）继续保留到到期复核。
+CREATE TABLE IF NOT EXISTS cancellation_requests (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  instance_id INTEGER NOT NULL,
+  route_id    TEXT NOT NULL,
+  applicant   TEXT NOT NULL,
+  -- pending 保护期等待中 / released 到期复核通过已解除 /
+  -- aborted 到期条件不符或保护期内开始走行，申请终止（保留锁闭）/
+  -- cancelled 管理员重置推演时清除
+  status      TEXT NOT NULL DEFAULT 'pending'
+              CHECK (status IN ('pending','released','aborted','cancelled')),
+  -- 申请时快照的保护时长（秒，正整数）；管理员之后修改设置不追改已有申请
+  protect_seconds INTEGER NOT NULL,
+  -- 最早解除时间：epoch 毫秒（UTC 绝对时间），重启后据此继续计时
+  release_at_ms   INTEGER NOT NULL,
+  end_reason  TEXT,                    -- 到期解除/终止/清除说明
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  ended_at    TEXT
+);
+
+-- 同一进路实例同一时刻至多一笔等待中的取消申请（重复申请不得产生第二笔）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cancel_pending_instance
+  ON cancellation_requests(instance_id) WHERE status='pending';
+CREATE INDEX IF NOT EXISTS idx_cancel_status ON cancellation_requests(status, release_at_ms);
+
 -- 同一等待申请最多兑现出一个进路实例（重复触发不得产生多个实例）
 CREATE UNIQUE INDEX IF NOT EXISTS idx_waiting_instance
   ON waiting_applications(instance_id) WHERE instance_id IS NOT NULL;

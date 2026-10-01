@@ -10,6 +10,7 @@ const adminRoutes = require('./routes/admin');
 const apiRoutes = require('./routes/api');
 const { InterlockError } = require('./interlocking');
 const waiting = require('./waiting');
+const cancel = require('./cancel');
 
 const PORT = Number(process.env.PORT || 3000);
 
@@ -28,6 +29,17 @@ try {
   }
 } catch (e) {
   console.error('[startup] 等待申请兑现扫描失败:', e);
+}
+
+// 服务重启后继续处理延时取消申请：未到期的继续计时，已到期的立即在事务内复核
+try {
+  const r = cancel.resumeAfterRestart();
+  if (r.pending) {
+    console.log(`[startup] 已恢复 ${r.pending} 笔延时取消申请的处理` +
+      (r.due ? `（其中 ${r.due} 笔已到期，立即复核）` : ''));
+  }
+} catch (e) {
+  console.error('[startup] 延时取消申请恢复处理失败:', e);
 }
 
 const app = express();
