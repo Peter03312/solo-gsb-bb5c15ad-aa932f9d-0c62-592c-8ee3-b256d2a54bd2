@@ -9,7 +9,8 @@
     "init-db": "node scripts/init-db.js",
     "smoke": "node test/smoke.cjs",
     "test:waiting": "node test/waiting-http.cjs",
-    "test": "npm run smoke && npm run test:waiting"
+    "test:cancel": "node test/cancellation-http.cjs",
+    "test": "npm run smoke && npm run test:waiting && npm run test:cancel"
   },
   "engines": {
     "node": ">=18"

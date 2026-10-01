@@ -6,6 +6,8 @@ let selectedRouteId = null;
 let chosenSwitchPos = {};   // 值班员为当前进路选择的道岔位置
 let selectedSection = null; // 右侧手工事件/状态操作用
 let pollTimer = null;
+let countdownTimer = null;
+let clockOffsetMs = 0;      // 服务器时钟 - 本地时钟（倒计时按服务器时间校准）
 
 const svg = document.getElementById('yard');
 const side = document.getElementById('side');
@@ -35,13 +37,41 @@ async function load(manual) {
   try {
     const data = await api('/api/state');
     STATE = data.state;
+    // 服务器时钟与本地时钟偏差，倒计时据此校准（页面常开也不会漂）
+    clockOffsetMs = (Date.parse(STATE.serverTime) || Date.now()) - (STATE.serverTimeMs || Date.now());
     renderYard();
     renderSide();
     const ps = document.getElementById('pollState');
     ps.textContent = '已同步 ' + new Date().toLocaleTimeString();
+    startCountdown();
   } catch (e) {
     if (manual) toast(e.message, 'err');
   }
+}
+
+/** 每 0.5s 只刷新倒计时文字（不重新拉取状态，避免输入框失焦） */
+function startCountdown() {
+  if (countdownTimer) return;
+  countdownTimer = setInterval(() => {
+    document.querySelectorAll('[data-countdown-to]').forEach((node) => {
+      const to = Number(node.getAttribute('data-countdown-to'));
+      const ms = to - (Date.now() + clockOffsetMs);
+      node.textContent = ms <= 0 ? '到期处理中…' : formatRemaining(ms);
+    });
+  }, 500);
+}
+
+function formatRemaining(ms) {
+  const total = Math.ceil(ms / 1000);
+  if (total < 60) return `${total} 秒`;
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return s ? `${m} 分 ${s} 秒` : `${m} 分`;
+}
+
+function pendingCancellationOf(instanceId) {
+  const all = STATE.pendingCancellations || {};
+  return all[String(instanceId)] || all[instanceId] || null;
 }
 
 /* ------------------------------ 站场图渲染 ------------------------------ */
@@ -187,6 +217,7 @@ function renderSide() {
     side.appendChild(renderRouteOps());
   }
   side.appendChild(renderWaitingPanel());
+  side.appendChild(renderCancellationPanel());
   side.appendChild(renderSwitchPanel());
   side.appendChild(renderSectionPanel());
   side.appendChild(renderInstances());
@@ -443,6 +474,71 @@ async function cancelWaiting(w) {
   } catch (e) { toast(e.message, 'err', 6500); }
 }
 
+/* ------------------------------- 延时取消 ------------------------------- */
+
+const CANCEL_STATUS = {
+  pending: ['amber', '延时取消中'],
+  released: ['green', '到期已解除'],
+  aborted: ['red', '取消终止·锁闭保留']
+};
+
+function renderCancellationPanel() {
+  const box = html('div', {});
+  box.appendChild(html('div', { class: 'section-title' },
+    `④ 延时取消申请（保护时长 ${STATE.cancelProtectionSeconds} 秒）`));
+  const all = STATE.cancellationRequests || [];
+  const mine = all.filter((c) => c.applicant === App.name());
+  const shown = mine.length ? mine : all.slice(0, 6);
+  if (!shown.length) {
+    box.appendChild(html('div', { class: 'hint' },
+      '暂无延时取消申请。对"已开放且尚无走行占用记录"的进路，可在下方进路卡片中点"申请延时取消"。'));
+    return box;
+  }
+  shown.forEach((c) => box.appendChild(renderCancellationCard(c)));
+  box.appendChild(html('div', { class: 'hint', style: 'margin-top:6px;' },
+    '申请后入口信号立即回红、区段与道岔锁继续保留，等待申请不会提前兑现；' +
+    '保护期满系统在同一事务内重查（仍开放/无走行占用/沿途区段均空闲）才解除并触发等待兑现，' +
+    '条件不符则终止取消并保留锁闭；保护期内收到首段占用事件同样终止。' +
+    (mine.length ? '' : '（当前展示全员申请）')));
+  return box;
+}
+
+function renderCancellationCard(c) {
+  const mine = c.applicant === App.name();
+  const card = html('div', {
+    class: `instance-card ${mine ? 'mine' : ''}`, id: 'cancel-' + c.id
+  });
+  const [cls, txt] = CANCEL_STATUS[c.status] || ['unknown', c.status];
+
+  const head = html('div', { class: 'row' });
+  head.appendChild(html('b', {}, `延时取消#${c.id}`));
+  head.appendChild(html('span', { class: 'muted' }, `进路实例 #${c.instanceId}（${c.applicant}${mine ? '·我' : ''}）`));
+  head.appendChild(html('span', { class: 'muted', style: 'flex:1;' }));
+  head.appendChild(html('span', { class: `badge ${cls}` }, txt));
+  card.appendChild(head);
+
+  const line = html('div', { class: 'hint', style: 'margin-top:4px;' });
+  line.appendChild(document.createTextNode(
+    `保护时长 ${c.durationSeconds} 秒，申请于 ${new Date(c.requestedAt).toLocaleTimeString()}，` +
+    `最早解除 ${new Date(c.releaseAt).toLocaleTimeString()}（`));
+  if (c.status === 'pending') {
+    line.appendChild(document.createTextNode('剩余 '));
+    line.appendChild(html('b', { 'data-countdown-to': String(c.releaseAt) },
+      formatRemaining(c.releaseAt - (Date.now() + clockOffsetMs))));
+    line.appendChild(document.createTextNode('）'));
+  } else {
+    line.appendChild(document.createTextNode('已处理）'));
+  }
+  card.appendChild(line);
+
+  if (c.endReason) {
+    card.appendChild(html('div', {
+      class: 'hint', style: `margin-top:4px;color:${c.status === 'released' ? 'var(--green)' : 'var(--red)'};`
+    }, (c.status === 'released' ? '解除说明：' : '终止原因：') + c.endReason));
+  }
+  return card;
+}
+
 /* ------------------------------- 道岔操作 ------------------------------- */
 
 function focusSwitch(switchId) {
@@ -457,7 +553,7 @@ function focusSwitch(switchId) {
 
 function renderSwitchPanel() {
   const box = html('div', {});
-  box.appendChild(html('div', { class: 'section-title' }, '④ 道岔操作'));
+  box.appendChild(html('div', { class: 'section-title' }, '⑤ 道岔操作'));
   if (STATE.switches.length === 0) {
     box.appendChild(html('div', { class: 'hint' }, '站场尚无道岔'));
     return box;
@@ -549,7 +645,7 @@ async function setSec(id, action) {
 
 function renderInstances() {
   const box = html('div', {});
-  box.appendChild(html('div', { class: 'section-title' }, '⑤ 已开放进路与走行事件'));
+  box.appendChild(html('div', { class: 'section-title' }, '⑦ 已开放进路与走行事件'));
   if (STATE.openInstances.length === 0) {
     box.appendChild(html('div', { class: 'hint' }, '当前无已开放进路'));
   }
@@ -569,6 +665,7 @@ function renderInstanceCard(inst) {
   const mine = inst.openedBy === App.name();
   const card = html('div', { class: `instance-card ${mine ? 'mine' : ''}`, id: 'inst-' + inst.id });
   const route = STATE.routes.find((r) => r.id === inst.routeId);
+  const cancelReq = pendingCancellationOf(inst.id);
 
   const head = html('div', { class: 'row' });
   head.appendChild(html('b', {}, `#${inst.id} ${inst.routeId}`));
@@ -577,7 +674,26 @@ function renderInstanceCard(inst) {
   head.appendChild(html('span', { class: 'muted', style: 'flex:1;' }));
   head.appendChild(html('span', { class: `badge ${inst.signalState === 'green' ? 'green' : 'red'}` },
     inst.signalState === 'green' ? '信号绿' : '信号红'));
+  if (cancelReq) head.appendChild(html('span', { class: 'badge amber' }, '延时取消中'));
   card.appendChild(head);
+
+  // 延时取消状态条：剩余时间实时倒计时 + 最早解除时刻
+  if (cancelReq) {
+    const bar = html('div', {
+      class: 'reasons', id: 'cancel-bar-' + cancelReq.id, style: 'margin-top:8px;'
+    });
+    const li = html('li', { style: 'background:#fdf4e3;border-color:#ecd2a5;color:#8a520a;' });
+    li.appendChild(document.createTextNode(
+      `⏳ 延时取消申请 #${cancelReq.id}（${cancelReq.applicant}）：入口信号已回红，区段/道岔锁保留，` +
+      '等待期内不会提前兑现；剩余 '));
+    li.appendChild(html('b', { 'data-countdown-to': String(cancelReq.releaseAt) },
+      formatRemaining(cancelReq.releaseAt - (Date.now() + clockOffsetMs))));
+    li.appendChild(document.createTextNode(
+      `，最早 ${new Date(cancelReq.releaseAt).toLocaleTimeString()} 解除。` +
+      '期间收到首段走行占用即终止取消；到期重查不满足（区段占用/未知）则终止并保留锁闭。'));
+    bar.appendChild(li);
+    card.appendChild(bar);
+  }
 
   // 区段走行状态表
   const tbl = html('table', { class: 'grid', style: 'margin-top:8px;' });
@@ -659,7 +775,41 @@ function renderInstanceCard(inst) {
   relRow.appendChild(html('span', { class: 'hint' }, '末段未清空前将被拒绝'));
   card.appendChild(relRow);
 
+  // 延时取消（仅尚无走行占用记录的开放进路可申请；pending 中按钮禁用）
+  const hasOccupy = inst.events.some((e) => e.action === 'occupy');
+  const dcRow = html('div', { class: 'row', style: 'margin-top:6px;' });
+  const dc = html('button', { class: 'ghost small' },
+    cancelReq ? '延时取消申请中…' : '申请延时取消（信号立即回红，锁闭保留）');
+  if (cancelReq || hasOccupy) {
+    dc.disabled = true;
+    dc.title = cancelReq
+      ? '该进路已有待处理的延时取消申请，重复申请不会缩短保护期或产生第二笔申请'
+      : '已有走行占用记录（车列已进入），不能再申请延时取消';
+  } else {
+    dc.addEventListener('click', () => requestDelayedCancel(inst));
+  }
+  dcRow.appendChild(dc);
+  dcRow.appendChild(html('span', { class: 'hint' },
+    `保护时长 ${STATE.cancelProtectionSeconds} 秒（管理员设置）；到期重查满足条件才解除`));
+  card.appendChild(dcRow);
+
   return card;
+}
+
+async function requestDelayedCancel(inst) {
+  if (!confirm(`对进路 #${inst.id}（${inst.routeId}）申请延时取消？\n` +
+    `入口信号将立即回红，区段与道岔锁继续保留；保护时长 ${STATE.cancelProtectionSeconds} 秒，` +
+    '到期重查“仍开放、无走行占用、沿途区段均空闲”后才解除。')) return;
+  try {
+    const data = await api(`/api/instances/${inst.id}/cancel-delayed`, { method: 'POST' });
+    if (data.created) toast('延时取消申请已受理，入口信号已回红', 'ok', 5000);
+    else toast(`该进路已有延时取消申请 #${data.cancellation.id}，不缩短期限、不重复申请`, 'info', 5000);
+    await load(true);
+    setTimeout(() => {
+      const node = document.getElementById('cancel-bar-' + data.cancellation.id);
+      if (node) node.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 50);
+  } catch (e) { toast(e.message, 'err', 7000); }
 }
 
 async function submitEvent(inst, seq, sectionId, action) {
@@ -673,7 +823,9 @@ async function submitEvent(inst, seq, sectionId, action) {
     } else if (r.routeReleased) {
       toast(`末段 ${sectionId} 已清空，整条进路 #${inst.id} 自动解除`, 'ok', 5000);
     } else if (r.signalTurnedRed) {
-      toast(`列车进入首段 ${sectionId}，信号已回红`, 'ok', 5000);
+      toast(r.cancellationAborted
+        ? `列车进入首段 ${sectionId}，信号已回红；保护期内延时取消申请 #${r.cancellationAborted} 终止，锁闭保留`
+        : `列车进入首段 ${sectionId}，信号已回红`, 'ok', 6000);
     } else if (r.sectionUnlocked) {
       toast(`区段 ${sectionId} 已清空并逐段解锁`, 'ok');
     } else {

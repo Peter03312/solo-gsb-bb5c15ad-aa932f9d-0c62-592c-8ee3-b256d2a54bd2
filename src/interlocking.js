@@ -393,8 +393,14 @@ function submitSectionEvent(instanceId, seq, sectionId, action, clientName) {
       if (step.step_order === 1) updates.push(`signal_state='red'`);
       db.prepare(`UPDATE route_instances SET ${updates.join(', ')} WHERE id=?`).run(instanceId);
 
+      // 首段占用：若该实例有 pending 的延时取消申请，同一事务内终止（锁闭保留）
+      let cancellationAborted = null;
+      if (step.step_order === 1) {
+        cancellationAborted = require('./cancellation').abortPendingByOccupyInTxn(instanceId);
+      }
+
       return { idempotent: false, instanceId, seq, sectionId, action,
-        signalTurnedRed: step.step_order === 1 };
+        signalTurnedRed: step.step_order === 1, cancellationAborted };
     }
 
     // action === 'clear'
@@ -532,14 +538,19 @@ function getState() {
 
   return {
     serverTime: new Date().toISOString(),
+    serverTimeMs: Date.now(),
     sections,
     switches,
     signals,
     routes,
     openInstances,
     recentReleased,
-    // 懒加载避免与 waiting.js 的循环依赖
-    waitingApplications: require('./waiting').listApplications()
+    // 懒加载避免与 waiting.js / cancellation.js 的循环依赖
+    waitingApplications: require('./waiting').listApplications(),
+    // 延时取消：全部申请（值班台显示取消状态与剩余时间）+ pending 按实例索引 + 保护时长
+    cancellationRequests: require('./cancellation').listRequests(),
+    pendingCancellations: require('./cancellation').pendingByInstance(),
+    cancelProtectionSeconds: require('./cancellation').getProtectionSeconds()
   };
 }
 

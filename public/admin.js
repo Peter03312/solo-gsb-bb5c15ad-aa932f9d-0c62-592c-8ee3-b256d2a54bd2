@@ -530,6 +530,31 @@ function renderSide() {
 
   // 推演管理
   side.appendChild(html('div', { class: 'section-title' }, '推演管理'));
+
+  // 延时取消保护时长设置（正整数秒；只对之后新申请生效）
+  const secNow = STATE.cancelProtectionSeconds || 60;
+  const secBox = html('div', { style: 'margin-bottom:10px;' });
+  const secRow = html('div', { class: 'row' });
+  const secIn = html('input', { type: 'number', min: '1', max: '604800', value: String(secNow), style: 'width:110px;' });
+  const secBtn = html('button', { class: 'ghost small' }, '保存保护时长');
+  secRow.appendChild(html('span', {}, '延时取消保护时长（秒，正整数）：'));
+  secRow.appendChild(secIn);
+  secRow.appendChild(secBtn);
+  secBox.appendChild(secRow);
+  secBox.appendChild(html('div', { class: 'hint' },
+    '值班员对"已开放且尚无走行占用"的进路申请延时取消后，信号立即回红、锁闭保留；' +
+    '保护期满且重查满足条件才解除。修改只对之后新申请生效，不追改已有申请。'));
+  secBtn.addEventListener('click', async () => {
+    try {
+      const data = await api('/api/admin/settings/cancel-protection', {
+        method: 'PUT', body: JSON.stringify({ protectionSeconds: Number(secIn.value) })
+      });
+      toast(`保护时长已设为 ${data.protectionSeconds} 秒（仅影响新申请）`, 'ok', 5000);
+      STATE.cancelProtectionSeconds = data.protectionSeconds;
+    } catch (e) { toast(e.message, 'err', 6000); }
+  });
+  side.appendChild(secBox);
+
   const mgmt = html('div', {});
   const b1 = html('button', { class: 'ghost' }, '清空推演状态（区段→未知，道岔→N）');
   const b2 = html('button', { class: 'ghost' }, '培训重开（区段→空闲，道岔→N）');

@@ -5,6 +5,7 @@ const { getDb } = require('../db');
 const { requireAuth } = require('../auth');
 const { getState, triggerWaitingSweep } = require('../interlocking');
 const waiting = require('../waiting');
+const cancellation = require('../cancellation');
 
 const router = express.Router();
 router.use(requireAuth('admin'));
@@ -35,6 +36,28 @@ function wrap(fn) {
 router.get('/state', (req, res) => {
   res.json({ ok: true, state: getState() });
 });
+
+/* ----------------------------- 延时取消设置 ----------------------------- */
+
+// 查询延时取消保护时长（秒）
+router.get('/settings/cancel-protection', (req, res) => {
+  res.json({
+    ok: true,
+    protectionSeconds: cancellation.getProtectionSeconds(),
+    defaultSeconds: cancellation.DEFAULT_DURATION_SECONDS,
+    maxSeconds: cancellation.MAX_DURATION_SECONDS
+  });
+});
+
+// 修改保护时长（正整数秒；仅影响之后新申请，不追改已有申请）
+router.put('/settings/cancel-protection', wrap((req, res) => {
+  const seconds = cancellation.setProtectionSeconds((req.body || {}).protectionSeconds);
+  res.json({
+    ok: true,
+    protectionSeconds: seconds,
+    note: '已更新；仅对之后提交的延时取消申请生效，已有申请的解除时刻保持不变'
+  });
+}));
 
 /* -------------------------------- 区段 ---------------------------------- */
 
@@ -334,6 +357,8 @@ router.delete('/routes/:id', wrap((req, res) => {
 router.post('/reset/state', wrap((req, res) => {
   const db = getDb();
   db.transaction(() => {
+    // 先清除待处理的延时取消申请（随后删除实例也会级联清除，这里显式清理语义清晰）
+    cancellation.clearAllByReset();
     db.prepare(`DELETE FROM route_instances`).run(); // 级联删除锁与事件
     db.prepare(`UPDATE sections SET occ_state='unknown'`).run();
     db.prepare(`UPDATE switches SET position='N'`).run();
@@ -350,6 +375,7 @@ router.post('/reset/state', wrap((req, res) => {
 router.post('/reset/training', wrap((req, res) => {
   const db = getDb();
   db.transaction(() => {
+    cancellation.clearAllByReset();
     db.prepare(`DELETE FROM route_instances`).run();
     db.prepare(`UPDATE sections SET occ_state='free'`).run();
     db.prepare(`UPDATE switches SET position='N'`).run();

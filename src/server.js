@@ -10,6 +10,7 @@ const adminRoutes = require('./routes/admin');
 const apiRoutes = require('./routes/api');
 const { InterlockError } = require('./interlocking');
 const waiting = require('./waiting');
+const cancellation = require('./cancellation');
 
 const PORT = Number(process.env.PORT || 3000);
 
@@ -29,6 +30,9 @@ try {
 } catch (e) {
   console.error('[startup] 等待申请兑现扫描失败:', e);
 }
+
+// 启动延时取消到期处理：立即扫描一次（处理重启期间已到期的申请），之后每 0.5s 扫描
+cancellation.startScheduler();
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));

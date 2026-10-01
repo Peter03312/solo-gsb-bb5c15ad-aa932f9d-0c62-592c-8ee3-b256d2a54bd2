@@ -154,6 +154,35 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_waiting_instance
 CREATE INDEX IF NOT EXISTS idx_waiting_status ON waiting_applications(status, id);
 CREATE INDEX IF NOT EXISTS idx_waiting_applicant ON waiting_applications(applicant);
 
+-- 延时取消申请：值班员对"已开放且尚无走行占用记录"的进路申请保护期后取消。
+--  - 申请立即令入口信号回红，原区段/道岔锁（route_locks）继续保留；
+--  - 最早解除时刻 = 申请时刻 + 申请时保护时长快照（管理员之后改设置不追改）；
+--  - 到期在同一事务内重查：实例仍开放、无走行占用记录、沿途区段均空闲才解除；
+--    条件不符则终止申请（aborted），锁闭保留并写明原因；
+--  - 保护期内收到首段走行占用事件：事件照常受理，本申请同步终止；
+--  - 同一实例同时至多一笔 pending（部分唯一索引兜底重复申请）。
+-- instance_id 设外键级联：管理员重置删除进路实例时申请记录一并清除。
+CREATE TABLE IF NOT EXISTS cancellation_applications (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  instance_id INTEGER NOT NULL REFERENCES route_instances(id) ON DELETE CASCADE,
+  applicant   TEXT NOT NULL,           -- 申请人（值班员姓名）
+  -- pending 保护期等待中 / released 到期核验通过已解除进路 / aborted 条件不符或已走行，终止（锁闭保留）
+  status      TEXT NOT NULL DEFAULT 'pending'
+              CHECK (status IN ('pending','released','aborted')),
+  duration_seconds INTEGER NOT NULL,   -- 申请时的保护时长快照（秒，正整数）
+  requested_at INTEGER NOT NULL,       -- 申请时刻（epoch 毫秒）
+  release_at   INTEGER NOT NULL,       -- 最早解除时刻（epoch 毫秒）
+  processed_at INTEGER,                -- 进入终态的时刻（epoch 毫秒）
+  end_reason  TEXT,                    -- 终止/解除说明
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 同一进路实例同时至多一笔待处理的延时取消申请（重复申请幂等，不得产生第二笔/缩短期限）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cancel_pending_instance
+  ON cancellation_applications(instance_id) WHERE status='pending';
+CREATE INDEX IF NOT EXISTS idx_cancel_status ON cancellation_applications(status, release_at);
+CREATE INDEX IF NOT EXISTS idx_cancel_applicant ON cancellation_applications(applicant);
+
 CREATE INDEX IF NOT EXISTS idx_locks_instance ON route_locks(instance_id);
 CREATE INDEX IF NOT EXISTS idx_events_instance ON section_events(instance_id, seq);
 CREATE INDEX IF NOT EXISTS idx_steps_route ON route_steps(route_id, step_order);

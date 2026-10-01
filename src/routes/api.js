@@ -4,6 +4,7 @@ const express = require('express');
 const { requireAuth } = require('../auth');
 const inter = require('../interlocking');
 const waiting = require('../waiting');
+const cancellation = require('../cancellation');
 const { InterlockError } = require('../interlocking');
 
 const router = express.Router();
@@ -71,6 +72,36 @@ router.post('/instances/:id/events', wrap((req, res) => {
 router.post('/instances/:id/release', wrap((req, res) => {
   const detail = inter.releaseInstance(Number(req.params.id), req.session.name);
   res.json({ ok: true, instance: detail });
+}));
+
+/* ------------------------------ 延时取消 ------------------------------ */
+
+// 申请延时取消（仅已开放且尚无走行占用记录的进路）；重复申请返回原 pending
+router.post('/instances/:id/cancel-delayed', wrap((req, res) => {
+  const result = cancellation.requestCancellation(Number(req.params.id), req.session.name);
+  res.status(result.created ? 201 : 200).json({
+    ok: true,
+    created: result.created,
+    cancellation: result.request
+  });
+}));
+
+// 查看延时取消申请：默认本人全部；?scope=all 全员（值班台仲裁展示）；
+// 可选 ?status=pending|released|aborted
+router.get('/cancellations', wrap((req, res) => {
+  const scope = String(req.query.scope || 'mine');
+  const status = ['pending', 'released', 'aborted'].includes(req.query.status)
+    ? req.query.status : null;
+  const list = cancellation.listRequests({
+    applicant: scope === 'all' ? undefined : req.session.name,
+    status
+  });
+  res.json({
+    ok: true,
+    cancellations: list,
+    protectionSeconds: cancellation.getProtectionSeconds(),
+    me: req.session.name
+  });
 }));
 
 /* ------------------------------ 等待申请 ------------------------------ */
